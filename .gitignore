@@ -46,3 +46,11 @@ htmlcov/
 
 # Pre-commit hooks
 .pre-commit-config.yaml~
+*.png
+*.json
+*.zip
+*.zip.part
+*.zip.part.1
+*.zip.part.2
+*.zip.part.3
+*.zip.part.4

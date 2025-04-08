@@ -6,6 +6,7 @@ import queue
 import secrets
 import threading
 import time
+import zipfile
 from datetime import datetime
 from glob import glob
 from pathlib import Path
@@ -132,6 +133,17 @@ class SevaRenderer(object):
     def __init__(self, server: viser.ViserServer):
         self.server = server
         self.gui_state = None
+
+    def create_download_zip(self, output_dir: str) -> str:
+        """Create a zip file containing all output data and return its path."""
+        zip_path = output_dir + ".zip"
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for root, _, files in os.walk(output_dir):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    arcname = os.path.relpath(file_path, output_dir)
+                    zipf.write(file_path, arcname)
+        return zip_path
 
     def preprocess(
         self, input_img_path_or_tuples: list[tuple[str, None]] | str
@@ -414,7 +426,7 @@ class SevaRenderer(object):
         )
         return target_c2ws, target_Ks
 
-    def export_output_data(self, preprocessed: dict, output_dir: str):
+    def export_output_data(self, preprocessed: dict, output_dir: str) -> str:
         input_imgs, input_Ks, input_c2ws, input_wh = (
             preprocessed["input_imgs"],
             preprocessed["input_Ks"],
@@ -459,6 +471,7 @@ class SevaRenderer(object):
         ) as f:
             json.dump(split_dict, f, indent=4)
         gr.Info(f"Output data saved to {output_dir}", duration=1)
+        return self.create_download_zip(output_dir)
 
     def render(
         self,
@@ -1009,6 +1022,15 @@ def main(server_port: int | None = None, share: bool = True):
                         output_video = gr.Video(
                             label="Output", interactive=False, autoplay=True, loop=True
                         )
+                        with gr.Group():
+                            output_data_dir = gr.Textbox(label="Output data directory")
+                            output_data_btn = gr.Button("Export output data")
+                            download_btn = gr.File(label="Download results", interactive=False)
+                        output_data_btn.click(
+                            lambda r, *args: r.export_output_data(*args),
+                            inputs=[renderer, preprocessed, output_data_dir],
+                            outputs=[download_btn],
+                        )
                         render_btn.click(
                             lambda r, *args: (yield from r.render(*args)),
                             inputs=[
@@ -1186,9 +1208,11 @@ def main(server_port: int | None = None, share: bool = True):
                         with gr.Group():
                             output_data_dir = gr.Textbox(label="Output data directory")
                             output_data_btn = gr.Button("Export output data")
+                            download_btn = gr.File(label="Download results", interactive=False)
                         output_data_btn.click(
                             lambda r, *args: r.export_output_data(*args),
                             inputs=[renderer, preprocessed, output_data_dir],
+                            outputs=[download_btn],
                         )
                     with gr.Column():
                         with gr.Group():
