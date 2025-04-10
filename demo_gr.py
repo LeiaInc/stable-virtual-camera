@@ -426,7 +426,12 @@ class SevaRenderer(object):
         )
         return target_c2ws, target_Ks
 
-    def export_output_data(self, preprocessed: dict, output_dir: str) -> str:
+    def export_output_data(self, preprocessed: dict, output_dir: str = None) -> str:
+        # Create a timestamp-based output directory if none is provided
+        if output_dir is None or output_dir.strip() == "":
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_dir = osp.join(WORK_DIR, f"export_{timestamp}")
+            
         input_imgs, input_Ks, input_c2ws, input_wh = (
             preprocessed["input_imgs"],
             preprocessed["input_Ks"],
@@ -1023,12 +1028,11 @@ def main(server_port: int | None = None, share: bool = True):
                             label="Output", interactive=False, autoplay=True, loop=True
                         )
                         with gr.Group():
-                            output_data_dir = gr.Textbox(label="Output data directory")
-                            output_data_btn = gr.Button("Export output data")
+                            output_data_btn = gr.Button("Download Results as ZIP")
                             download_btn = gr.File(label="Download results", interactive=False)
                         output_data_btn.click(
                             lambda r, *args: r.export_output_data(*args),
-                            inputs=[renderer, preprocessed, output_data_dir],
+                            inputs=[renderer, preprocessed],
                             outputs=[download_btn],
                         )
                         render_btn.click(
@@ -1206,12 +1210,11 @@ def main(server_port: int | None = None, share: bool = True):
                                 label="Camera scale (useful for single-view input)",
                             )
                         with gr.Group():
-                            output_data_dir = gr.Textbox(label="Output data directory")
-                            output_data_btn = gr.Button("Export output data")
+                            output_data_btn = gr.Button("Download Results as ZIP")
                             download_btn = gr.File(label="Download results", interactive=False)
                         output_data_btn.click(
                             lambda r, *args: r.export_output_data(*args),
-                            inputs=[renderer, preprocessed, output_data_dir],
+                            inputs=[renderer, preprocessed],
                             outputs=[download_btn],
                         )
                     with gr.Column():
