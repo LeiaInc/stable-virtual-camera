@@ -438,7 +438,15 @@ class SevaRenderer(object):
             preprocessed["input_c2ws"],
             preprocessed["input_wh"],
         )
-        target_c2ws, target_Ks = self.get_target_c2ws_and_Ks_from_gui(preprocessed)
+        
+        # Check if we're in GUI mode (Advanced tab) or Basic tab
+        if self.gui_state is not None and self.gui_state.camera_traj_list is not None:
+            # Advanced tab - get target cameras from GUI
+            target_c2ws, target_Ks = self.get_target_c2ws_and_Ks_from_gui(preprocessed)
+        else:
+            # Basic tab - just use the input camera
+            target_c2ws = input_c2ws.clone()
+            target_Ks = input_Ks.clone()
 
         num_inputs = len(input_imgs)
         num_targets = len(target_c2ws)
@@ -1035,6 +1043,12 @@ def main(server_port: int | None = None, share: bool = True):
                             inputs=[renderer, preprocessed],
                             outputs=[download_btn],
                         )
+                        # Clean up the zip file after download
+                        download_btn.change(
+                            lambda file_info: os.remove(file_info.name) if file_info is not None else None,
+                            inputs=[download_btn],
+                            outputs=[],
+                        )
                         render_btn.click(
                             lambda r, *args: (yield from r.render(*args)),
                             inputs=[
@@ -1216,6 +1230,12 @@ def main(server_port: int | None = None, share: bool = True):
                             lambda r, *args: r.export_output_data(*args),
                             inputs=[renderer, preprocessed],
                             outputs=[download_btn],
+                        )
+                        # Clean up the zip file after download
+                        download_btn.change(
+                            lambda file_info: os.remove(file_info.name) if file_info is not None else None,
+                            inputs=[download_btn],
+                            outputs=[],
                         )
                     with gr.Column():
                         with gr.Group():
