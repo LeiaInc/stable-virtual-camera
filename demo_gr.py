@@ -1043,12 +1043,6 @@ def main(server_port: int | None = None, share: bool = True):
                             inputs=[renderer, preprocessed],
                             outputs=[download_btn],
                         )
-                        # Clean up the zip file after download
-                        download_btn.change(
-                            lambda file_info: os.remove(file_info.name) if file_info is not None else None,
-                            inputs=[download_btn],
-                            outputs=[],
-                        )
                         render_btn.click(
                             lambda r, *args: (yield from r.render(*args)),
                             inputs=[
@@ -1230,22 +1224,6 @@ def main(server_port: int | None = None, share: bool = True):
                             lambda r, *args: r.export_output_data(*args),
                             inputs=[renderer, preprocessed],
                             outputs=[download_btn],
-                        )
-                        # Clean up the zip file after download
-                        download_btn.change(
-                            lambda file_info: os.remove(file_info.name) if file_info is not None else None,
-                            inputs=[download_btn],
-                            outputs=[],
-                        )
-                    with gr.Column():
-                        with gr.Group():
-                            abort_btn = gr.Button("Abort rendering", visible=False)
-                            render_btn.render()
-                            render_progress = gr.Textbox(
-                                label="", visible=False, interactive=False
-                            )
-                        output_video = gr.Video(
-                            label="Output", interactive=False, autoplay=True, loop=True
                         )
                         render_btn.click(
                             lambda r, *args: (yield from r.render(*args)),
