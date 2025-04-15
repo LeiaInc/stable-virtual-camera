@@ -133,6 +133,7 @@ class SevaRenderer(object):
     def __init__(self, server: viser.ViserServer):
         self.server = server
         self.gui_state = None
+        self._current_export_dir = None
 
     def create_download_zip(self, output_dir: str) -> str:
         """Create a zip file containing all output data and return its path."""
@@ -427,6 +428,14 @@ class SevaRenderer(object):
         return target_c2ws, target_Ks
 
     def export_output_data(self, preprocessed: dict, output_dir: str = None) -> str:
+        """Export the current data for NeRF/Gaussian Splatting processing."""
+        # If we're in the middle of rendering or just finished rendering,
+        # use the already created export directory
+        if hasattr(self, '_current_export_dir') and self._current_export_dir:
+            # Just return the existing ZIP
+            gr.Info(f"Using export data from the current render", duration=3)
+            return self.create_download_zip(self._current_export_dir)
+        
         # Create a timestamp-based output directory if none is provided
         if output_dir is None or output_dir.strip() == "":
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -460,31 +469,196 @@ class SevaRenderer(object):
 
         os.makedirs(output_dir, exist_ok=True)
         img_paths = []
+        
+        # Save input images
         for i, img in enumerate(input_imgs):
             iio.imwrite(img_path := osp.join(output_dir, f"{i:03d}.png"), img)
             img_paths.append(img_path)
-        for i in range(num_targets):
-            iio.imwrite(
-                img_path := osp.join(output_dir, f"{i + num_inputs:03d}.png"),
-                np.zeros((input_wh[1], input_wh[0], 3), dtype=np.uint8),
-            )
-            img_paths.append(img_path)
+        
+        # Look for rendered images in recent directories
+        latest_render_dir = self._find_latest_render_dir()
+        if latest_render_dir and osp.exists(latest_render_dir):
+            # Try to find the final rendered video
+            mp4_files = sorted(glob(osp.join(latest_render_dir, "*.mp4")))
+            if mp4_files:
+                latest_video = mp4_files[-1]
+                # Extract frames from the video
+                self._extract_frames_from_video(latest_video, output_dir, start_idx=num_inputs)
+                # Update target count based on extracted frames
+                extracted_frames = sorted(glob(osp.join(output_dir, f"[{num_inputs:03d}-9]*.png")))
+                num_targets = len(extracted_frames)
+            else:
+                # If no video found, look for individual frames
+                rendered_frames = sorted(glob(osp.join(latest_render_dir, "*.png")))
+                for i, frame_path in enumerate(rendered_frames):
+                    target_path = osp.join(output_dir, f"{i + num_inputs:03d}.png")
+                    img = iio.imread(frame_path)
+                    iio.imwrite(target_path, img)
+                    img_paths.append(target_path)
+                num_targets = len(rendered_frames)
+        else:
+            # If no rendered output is found, create placeholder black images for targets
+            for i in range(num_targets):
+                iio.imwrite(
+                    img_path := osp.join(output_dir, f"{i + num_inputs:03d}.png"),
+                    np.zeros((input_wh[1], input_wh[0], 3), dtype=np.uint8),
+                )
+                img_paths.append(img_path)
 
-        # Convert from OpenCV to OpenGL camera format.
+        # Convert from OpenCV to OpenGL camera format
         all_c2ws = np.concatenate([input_c2ws, target_c2ws])
         all_Ks = np.concatenate([input_Ks, target_Ks])
         all_c2ws = all_c2ws @ np.diag([1, -1, -1, 1])
+        
+        # Save camera transforms for NeRF/Gaussian Splatting
         create_transforms_simple(output_dir, img_paths, img_whs, all_c2ws, all_Ks)
+        
+        # Save additional NeRF-friendly formats
+        self._save_nerf_transforms(output_dir, img_paths, img_whs, all_c2ws, all_Ks)
+        
+        # Save point cloud data if available
+        if "points" in preprocessed and "point_colors" in preprocessed:
+            self._save_point_cloud(
+                output_dir, 
+                preprocessed["points"], 
+                preprocessed["point_colors"],
+                preprocessed.get("scene_scale", 1.0)
+            )
+        
+        # Save split information
         split_dict = {
             "train_ids": list(range(num_inputs)),
             "test_ids": list(range(num_inputs, num_inputs + num_targets)),
         }
-        with open(
-            osp.join(output_dir, f"train_test_split_{num_inputs}.json"), "w"
-        ) as f:
+        with open(osp.join(output_dir, f"train_test_split_{num_inputs}.json"), "w") as f:
             json.dump(split_dict, f, indent=4)
-        gr.Info(f"Output data saved to {output_dir}", duration=1)
+            
+        # Save metadata
+        metadata = {
+            "num_inputs": num_inputs,
+            "num_targets": num_targets,
+            "image_width": input_wh[0],
+            "image_height": input_wh[1],
+            "export_timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "scene_scale": float(preprocessed.get("scene_scale", 1.0)),
+        }
+        with open(osp.join(output_dir, "metadata.json"), "w") as f:
+            json.dump(metadata, f, indent=4)
+            
+        gr.Info(f"Output data saved to {output_dir}", duration=3)
         return self.create_download_zip(output_dir)
+        
+    def _find_latest_render_dir(self):
+        """Find the most recent render directory in WORK_DIR."""
+        render_dirs = sorted(glob(osp.join(WORK_DIR, "2*")))
+        return render_dirs[-1] if render_dirs else None
+        
+    def _extract_frames_from_video(self, video_path, output_dir, start_idx=0):
+        """Extract frames from video file and save as images."""
+        try:
+            # Use imageio to read video frames
+            reader = iio.imopen(video_path, "r")
+            # Extract metadata to get number of frames
+            metadata = reader.metadata()
+            n_frames = metadata.get("fps", 30) * metadata.get("duration", 0)
+            
+            # Read and save frames
+            frames = iio.imread(video_path)
+            if len(frames.shape) == 4:  # Check if frames is a sequence of images
+                for i, frame in enumerate(frames):
+                    iio.imwrite(
+                        osp.join(output_dir, f"{start_idx + i:03d}.png"), 
+                        frame
+                    )
+                return len(frames)
+            else:
+                # Single frame case
+                iio.imwrite(
+                    osp.join(output_dir, f"{start_idx:03d}.png"), 
+                    frames
+                )
+                return 1
+                
+        except Exception as e:
+            gr.Warning(f"Error extracting frames: {e}")
+            return 0
+            
+    def _save_nerf_transforms(self, output_dir, img_paths, img_whs, all_c2ws, all_Ks):
+        """Save camera transforms in a format friendly for NeRF training."""
+        # Create transforms.json in the style used by many NeRF implementations
+        nerf_format = {
+            "camera_angle_x": 0.0,  # Will be set properly below
+            "frames": []
+        }
+        
+        for i, (c2w, K, wh, img_path) in enumerate(zip(all_c2ws, all_Ks, img_whs, img_paths)):
+            # Extract focal length and calculate FOV
+            fx, fy = K[0, 0] * wh[0], K[1, 1] * wh[1]
+            fov_x = 2 * np.arctan(wh[0] / (2 * fx))
+            
+            # Set the global camera_angle_x from the first camera
+            if i == 0:
+                nerf_format["camera_angle_x"] = float(fov_x)
+                
+            # Convert c2w to the format expected by NeRF (already converted to OpenGL earlier)
+            frame_data = {
+                "file_path": osp.relpath(img_path, output_dir),
+                "transform_matrix": c2w.tolist(),
+                "intrinsics": {
+                    "fx": float(fx),
+                    "fy": float(fy),
+                    "cx": float(K[0, 2] * wh[0]),
+                    "cy": float(K[1, 2] * wh[1]),
+                    "width": int(wh[0]),
+                    "height": int(wh[1])
+                }
+            }
+            nerf_format["frames"].append(frame_data)
+            
+        with open(osp.join(output_dir, "transforms.json"), "w") as f:
+            json.dump(nerf_format, f, indent=4)
+            
+    def _save_point_cloud(self, output_dir, points, point_colors, scene_scale=1.0):
+        """Save point cloud data in PLY format for visualization."""
+        if not points or len(points) == 0:
+            return
+            
+        # Concatenate all point clouds
+        all_points = []
+        all_colors = []
+        for pts, colors in zip(points, point_colors):
+            if len(pts) > 0:
+                all_points.append(pts)
+                all_colors.append(colors)
+                
+        if not all_points:
+            return
+            
+        # Combine points and colors
+        combined_points = np.concatenate(all_points, axis=0)
+        combined_colors = np.concatenate(all_colors, axis=0)
+        
+        # Convert colors from float [0,1] to uint8 [0,255] if needed
+        if combined_colors.dtype != np.uint8 and combined_colors.max() <= 1.0:
+            combined_colors = (combined_colors * 255).astype(np.uint8)
+            
+        # Write PLY file - simple ASCII format
+        with open(osp.join(output_dir, "pointcloud.ply"), "w") as f:
+            f.write("ply\n")
+            f.write("format ascii 1.0\n")
+            f.write(f"element vertex {len(combined_points)}\n")
+            f.write("property float x\n")
+            f.write("property float y\n")
+            f.write("property float z\n")
+            f.write("property uchar red\n")
+            f.write("property uchar green\n")
+            f.write("property uchar blue\n")
+            f.write("end_header\n")
+            
+            for i in range(len(combined_points)):
+                x, y, z = combined_points[i]
+                r, g, b = combined_colors[i]
+                f.write(f"{x} {y} {z} {r} {g} {b}\n")
 
     def render(
         self,
@@ -540,6 +714,77 @@ class SevaRenderer(object):
         num_targets = len(target_c2ws)
         input_indices = list(range(num_inputs))
         target_indices = np.arange(num_inputs, num_inputs + num_targets).tolist()
+        
+        # Create export directory and save camera information immediately
+        export_dir = osp.join(WORK_DIR, f"export_{render_name}")
+        os.makedirs(export_dir, exist_ok=True)
+        
+        # Save input images
+        input_imgs_np = (input_imgs.cpu().numpy() * 255.0).astype(np.uint8)
+        img_paths = []
+        
+        for i, img in enumerate(input_imgs_np):
+            img_path = osp.join(export_dir, f"{i:03d}.png")
+            iio.imwrite(img_path, img)
+            img_paths.append(img_path)
+            
+        # Create placeholder images for target views
+        for i in range(num_targets):
+            img_path = osp.join(export_dir, f"{i + num_inputs:03d}.png")
+            iio.imwrite(img_path, np.zeros((H, W, 3), dtype=np.uint8))
+            img_paths.append(img_path)
+            
+        # Save camera information in NeRF format
+        img_whs = np.array((W, H))[None].repeat(len(input_imgs) + len(target_Ks), 0)
+        
+        # Convert from OpenCV to OpenGL camera format
+        all_c2ws_np = all_c2ws.cpu().numpy()
+        all_Ks_np = all_Ks.cpu().numpy()
+        all_c2ws_gl = all_c2ws_np @ np.diag([1, -1, -1, 1])
+        
+        # Save camera transforms
+        create_transforms_simple(export_dir, img_paths, img_whs, all_c2ws_gl, all_Ks_np)
+        
+        # Save in NeRF-friendly format
+        self._save_nerf_transforms(export_dir, img_paths, img_whs, all_c2ws_gl, all_Ks_np)
+        
+        # Save point cloud if available
+        if "points" in preprocessed and "point_colors" in preprocessed:
+            self._save_point_cloud(
+                export_dir, 
+                preprocessed["points"], 
+                preprocessed["point_colors"],
+                preprocessed.get("scene_scale", 1.0)
+            )
+        
+        # Save split information
+        split_dict = {
+            "train_ids": list(range(num_inputs)),
+            "test_ids": list(range(num_inputs, num_inputs + num_targets)),
+        }
+        with open(osp.join(export_dir, f"train_test_split_{num_inputs}.json"), "w") as f:
+            json.dump(split_dict, f, indent=4)
+            
+        # Save metadata for debugging
+        metadata = {
+            "num_inputs": num_inputs,
+            "num_targets": num_targets,
+            "image_width": W,
+            "image_height": H,
+            "preset_traj": preset_traj if preset_traj else "custom",
+            "render_dir": render_dir,
+            "export_timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "scene_scale": float(preprocessed.get("scene_scale", 1.0)),
+        }
+        with open(osp.join(export_dir, "metadata.json"), "w") as f:
+            json.dump(metadata, f, indent=4)
+
+        # Create a zip file of the export directory with current (empty) frames
+        zip_path = self.create_download_zip(export_dir)
+        
+        # Set a flag to update the export when rendering is complete
+        self._current_export_dir = export_dir
+        
         # Get anchor cameras.
         T = VERSION_DICT["T"]
         version_dict = copy.deepcopy(VERSION_DICT)
@@ -676,54 +921,272 @@ class SevaRenderer(object):
             second_pass_pbar=second_pass_pbar,
             abort_event=abort_event,
         )
+        
+        # Set up a queue for communication from worker thread
         output_queue = queue.Queue()
-
+        
+        # We need to capture these to pass to the worker thread
         blocks = LocalContext.blocks.get()
         event_id = LocalContext.event_id.get()
+        
+        # Initial yield to make download available immediately
+        yield (
+            gr.update(),  # No video yet
+            gr.update(visible=False),  # Hide render button 
+            gr.update(visible=True),   # Show abort button
+            gr.update(visible=True),   # Show progress
+            gr.update(value=zip_path, interactive=True),  # Enable download with initial poses
+        )
 
+        # Define worker thread to process video generation
         def worker():
-            # gradio doesn't support threading with progress intentionally, so
-            # we need to hack this.
             LocalContext.blocks.set(blocks)
             LocalContext.event_id.set(event_id)
-            for i, video_path in enumerate(video_path_generator):
-                if i == 0:
-                    output_queue.put(
-                        (
-                            video_path,
-                            gr.update(),
-                            gr.update(),
-                            gr.update(),
+            
+            try:
+                for i, video_path in enumerate(video_path_generator):
+                    if i == 0:
+                        # First pass completed - update UI and export with first pass frames
+                        self._update_export_with_rendered_frames(
+                            osp.join(render_dir, "first-pass"), 
+                            export_dir, 
+                            num_inputs
                         )
-                    )
-                elif i == 1:
-                    output_queue.put(
-                        (
-                            video_path,
-                            gr.update(visible=True),
-                            gr.update(visible=False),
-                            gr.update(visible=False),
-                        )
-                    )
-                else:
-                    gr.Error("More than two passes during rendering.")
+                        first_pass_zip_path = self.create_download_zip(export_dir)
+                        
+                        output_queue.put({
+                            "video": video_path,
+                            "render_btn": gr.update(visible=False),
+                            "abort_btn": gr.update(visible=True),
+                            "progress": gr.update(visible=True),
+                            "download": gr.update(value=first_pass_zip_path, interactive=True)
+                        })
+                    elif i == 1:
+                        # Second pass completed - update export with final frames
+                        self._update_export_with_rendered_frames(render_dir, export_dir, num_inputs)
+                        final_zip_path = self.create_download_zip(export_dir)
+                        
+                        # Update UI with final video
+                        output_queue.put({
+                            "video": video_path,
+                            "render_btn": gr.update(visible=True),
+                            "abort_btn": gr.update(visible=False),
+                            "progress": gr.update(visible=False),
+                            "download": gr.update(value=final_zip_path, interactive=True)
+                        })
+                    else:
+                        gr.Error("More than two passes during rendering.")
+            except Exception as e:
+                gr.Error(f"Error during rendering: {str(e)}")
+                output_queue.put({
+                    "video": None,
+                    "render_btn": gr.update(visible=True),
+                    "abort_btn": gr.update(visible=False),
+                    "progress": gr.update(visible=False),
+                    "download": gr.update(value=zip_path, interactive=True)
+                })
 
+        # Start worker thread
         thread = threading.Thread(target=worker, daemon=True)
         thread.start()
-
+        
+        # Wait for results or abort
         while thread.is_alive() or not output_queue.empty():
             if abort_event.is_set():
-                thread.join()
+                thread.join(timeout=1.0)
                 abort_event.clear()
                 yield (
-                    gr.update(),
-                    gr.update(visible=True),
-                    gr.update(visible=False),
-                    gr.update(visible=False),
+                    None,  # Clear video
+                    gr.update(visible=True),  # Show render button
+                    gr.update(visible=False),  # Hide abort button
+                    gr.update(visible=False),  # Hide progress
+                    gr.update(value=zip_path, interactive=True)  # Keep download button
                 )
+                return
+                
             time.sleep(0.1)
-            while not output_queue.empty():
-                yield output_queue.get()
+            if not output_queue.empty():
+                result = output_queue.get()
+                yield (
+                    result["video"],
+                    result["render_btn"],
+                    result["abort_btn"],
+                    result["progress"],
+                    result["download"]
+                )
+
+    def _update_export_with_rendered_frames(self, render_dir, export_dir, start_idx):
+        """Update the export directory with actual rendered frames after they're generated."""
+        try:
+            # Check if the render directory exists
+            if not osp.exists(render_dir):
+                gr.Warning(f"Render directory not found: {render_dir}")
+                return
+                
+            # Log for debugging
+            gr.Info(f"Updating export from {render_dir}")
+            
+            # Look for videos first (mp4 files)
+            mp4_files = sorted(glob(osp.join(render_dir, "*.mp4")))
+            
+            # If no mp4 files found directly, look for mp4 files in subdirectories
+            if not mp4_files:
+                for subdir in glob(osp.join(render_dir, "*/")):
+                    mp4_files.extend(sorted(glob(osp.join(subdir, "*.mp4"))))
+                    
+            # If still no mp4 files, check the parent directory (one level up)
+            if not mp4_files and '/' in render_dir:
+                parent_dir = osp.dirname(render_dir)
+                mp4_files.extend(sorted(glob(osp.join(parent_dir, "*.mp4"))))
+            
+            if mp4_files:
+                gr.Info(f"Found {len(mp4_files)} video file(s) to extract frames from")
+                # Extract frames from the most recent video
+                video_path = mp4_files[-1]
+                
+                try:
+                    # Read the video frames
+                    frames = iio.imread(video_path)
+                    
+                    if len(frames.shape) == 4:  # Check if frames is a sequence of images
+                        for i, frame in enumerate(frames):
+                            out_path = osp.join(export_dir, f"{start_idx + i:03d}.png")
+                            iio.imwrite(out_path, frame)
+                        gr.Info(f"Extracted {len(frames)} frames from video")
+                    else:
+                        # Single frame case
+                        out_path = osp.join(export_dir, f"{start_idx:03d}.png")
+                        iio.imwrite(out_path, frames)
+                        gr.Info("Extracted 1 frame from video")
+                except Exception as e:
+                    gr.Warning(f"Error reading video file: {str(e)}")
+            
+            # Look for individual frames (png/jpg files)
+            image_files = []
+            for ext in ["*.png", "*.jpg", "*.jpeg"]:
+                # Look in main directory
+                image_files.extend(sorted(glob(osp.join(render_dir, ext))))
+                # Look in subdirectories
+                for subdir in glob(osp.join(render_dir, "*/")):
+                    image_files.extend(sorted(glob(osp.join(subdir, ext))))
+                    
+            # If no image files, check parent directory
+            if not image_files and '/' in render_dir:
+                parent_dir = osp.dirname(render_dir)
+                for ext in ["*.png", "*.jpg", "*.jpeg"]:
+                    image_files.extend(sorted(glob(osp.join(parent_dir, ext))))
+            
+            if image_files:
+                gr.Info(f"Found {len(image_files)} individual image file(s)")
+                for i, frame_path in enumerate(image_files):
+                    try:
+                        img = iio.imread(frame_path)
+                        out_path = osp.join(export_dir, f"{start_idx + i:03d}.png")
+                        iio.imwrite(out_path, img)
+                    except Exception as e:
+                        gr.Warning(f"Error processing image {frame_path}: {str(e)}")
+                        
+            # If no frames found at all, warn user
+            if not mp4_files and not image_files:
+                gr.Warning(f"No frames or videos found in {render_dir}")
+                    
+            # Update metadata to mark that frames have been updated
+            metadata_path = osp.join(export_dir, "metadata.json")
+            if osp.exists(metadata_path):
+                with open(metadata_path, "r") as f:
+                    metadata = json.load(f)
+                    
+                metadata["frames_updated"] = True
+                metadata["update_timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                if mp4_files:
+                    metadata["frame_source"] = "video"
+                    metadata["video_path"] = mp4_files[-1]
+                elif image_files:
+                    metadata["frame_source"] = "images"
+                    metadata["num_images"] = len(image_files)
+                
+                with open(metadata_path, "w") as f:
+                    json.dump(metadata, f, indent=4)
+                    
+        except Exception as e:
+            gr.Warning(f"Error updating export with rendered frames: {str(e)}")
+            
+    def _save_nerf_transforms(self, output_dir, img_paths, img_whs, all_c2ws, all_Ks):
+        """Save camera transforms in a format friendly for NeRF training."""
+        # Create transforms.json in the style used by many NeRF implementations
+        nerf_format = {
+            "camera_angle_x": 0.0,  # Will be set properly below
+            "frames": []
+        }
+        
+        for i, (c2w, K, wh, img_path) in enumerate(zip(all_c2ws, all_Ks, img_whs, img_paths)):
+            # Extract focal length and calculate FOV
+            fx, fy = K[0, 0] * wh[0], K[1, 1] * wh[1]
+            fov_x = 2 * np.arctan(wh[0] / (2 * fx))
+            
+            # Set the global camera_angle_x from the first camera
+            if i == 0:
+                nerf_format["camera_angle_x"] = float(fov_x)
+                
+            # Convert c2w to the format expected by NeRF (already converted to OpenGL earlier)
+            frame_data = {
+                "file_path": osp.relpath(img_path, output_dir),
+                "transform_matrix": c2w.tolist(),
+                "intrinsics": {
+                    "fx": float(fx),
+                    "fy": float(fy),
+                    "cx": float(K[0, 2] * wh[0]),
+                    "cy": float(K[1, 2] * wh[1]),
+                    "width": int(wh[0]),
+                    "height": int(wh[1])
+                }
+            }
+            nerf_format["frames"].append(frame_data)
+            
+        with open(osp.join(output_dir, "transforms.json"), "w") as f:
+            json.dump(nerf_format, f, indent=4)
+            
+    def _save_point_cloud(self, output_dir, points, point_colors, scene_scale=1.0):
+        """Save point cloud data in PLY format for visualization."""
+        if not points or len(points) == 0:
+            return
+            
+        # Concatenate all point clouds
+        all_points = []
+        all_colors = []
+        for pts, colors in zip(points, point_colors):
+            if len(pts) > 0:
+                all_points.append(pts)
+                all_colors.append(colors)
+                
+        if not all_points:
+            return
+            
+        # Combine points and colors
+        combined_points = np.concatenate(all_points, axis=0)
+        combined_colors = np.concatenate(all_colors, axis=0)
+        
+        # Convert colors from float [0,1] to uint8 [0,255] if needed
+        if combined_colors.dtype != np.uint8 and combined_colors.max() <= 1.0:
+            combined_colors = (combined_colors * 255).astype(np.uint8)
+            
+        # Write PLY file - simple ASCII format
+        with open(osp.join(output_dir, "pointcloud.ply"), "w") as f:
+            f.write("ply\n")
+            f.write("format ascii 1.0\n")
+            f.write(f"element vertex {len(combined_points)}\n")
+            f.write("property float x\n")
+            f.write("property float y\n")
+            f.write("property float z\n")
+            f.write("property uchar red\n")
+            f.write("property uchar green\n")
+            f.write("property uchar blue\n")
+            f.write("end_header\n")
+            
+            for i in range(len(combined_points)):
+                x, y, z = combined_points[i]
+                r, g, b = combined_colors[i]
+                f.write(f"{x} {y} {z} {r} {g} {b}\n")
 
 
 # This is basically a copy of the original `networking.setup_tunnel` function,
@@ -1037,7 +1500,7 @@ def main(server_port: int | None = None, share: bool = True):
                         )
                         with gr.Group():
                             output_data_btn = gr.Button("Download Results as ZIP")
-                            download_btn = gr.File(label="Download results", interactive=False)
+                            download_btn = gr.File(label="Download NeRF/Gaussian Splatting Data", interactive=False)
                         output_data_btn.click(
                             lambda r, *args: r.export_output_data(*args),
                             inputs=[renderer, preprocessed],
@@ -1062,6 +1525,7 @@ def main(server_port: int | None = None, share: bool = True):
                                 render_btn,
                                 abort_btn,
                                 render_progress,
+                                download_btn,
                             ],
                             show_progress_on=[render_progress],
                             concurrency_id="gpu_queue",
@@ -1071,8 +1535,9 @@ def main(server_port: int | None = None, share: bool = True):
                                 gr.update(visible=False),
                                 gr.update(visible=True),
                                 gr.update(visible=True),
+                                gr.update(interactive=True),
                             ],
-                            outputs=[render_btn, abort_btn, render_progress],
+                            outputs=[render_btn, abort_btn, render_progress, download_btn],
                         )
                         abort_btn.click(set_abort_event)
             with gr.Tab("Advanced"):
@@ -1219,7 +1684,7 @@ def main(server_port: int | None = None, share: bool = True):
                             )
                         with gr.Group():
                             output_data_btn = gr.Button("Download Results as ZIP")
-                            download_btn = gr.File(label="Download results", interactive=False)
+                            download_btn = gr.File(label="Download NeRF/Gaussian Splatting Data", interactive=False)
                         output_data_btn.click(
                             lambda r, *args: r.export_output_data(*args),
                             inputs=[renderer, preprocessed],
@@ -1234,9 +1699,9 @@ def main(server_port: int | None = None, share: bool = True):
                                 seed,
                                 chunk_strategy,
                                 cfg,
-                                gr.State(),
-                                gr.State(),
-                                gr.State(),
+                                preset_traj,
+                                num_frames,
+                                zoom_factor,
                                 camera_scale,
                             ],
                             outputs=[
@@ -1244,6 +1709,7 @@ def main(server_port: int | None = None, share: bool = True):
                                 render_btn,
                                 abort_btn,
                                 render_progress,
+                                download_btn,
                             ],
                             show_progress_on=[render_progress],
                             concurrency_id="gpu_queue",
@@ -1253,8 +1719,9 @@ def main(server_port: int | None = None, share: bool = True):
                                 gr.update(visible=False),
                                 gr.update(visible=True),
                                 gr.update(visible=True),
+                                gr.update(interactive=True),
                             ],
-                            outputs=[render_btn, abort_btn, render_progress],
+                            outputs=[render_btn, abort_btn, render_progress, download_btn],
                         )
                         abort_btn.click(set_abort_event)
 
