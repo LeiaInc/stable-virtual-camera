@@ -515,16 +515,6 @@ class SevaRenderer(object):
         
         # Save additional NeRF-friendly formats
         self._save_nerf_transforms(output_dir, img_paths, img_whs, all_c2ws, all_Ks)
-        
-        # Save point cloud data if available
-        if "points" in preprocessed and "point_colors" in preprocessed:
-            self._save_point_cloud(
-                output_dir, 
-                preprocessed["points"], 
-                preprocessed["point_colors"],
-                preprocessed.get("scene_scale", 1.0)
-            )
-        
         # Save split information
         split_dict = {
             "train_ids": list(range(num_inputs)),
@@ -593,7 +583,7 @@ class SevaRenderer(object):
         
         for i, (c2w, K, wh, img_path) in enumerate(zip(all_c2ws, all_Ks, img_whs, img_paths)):
             # Extract focal length and calculate FOV
-            fx, fy = K[0, 0] * wh[0], K[1, 1] * wh[1]
+            fx, fy = K[0, 0], K[1, 1]
             fov_x = 2 * np.arctan(wh[0] / (2 * fx))
             
             # Set the global camera_angle_x from the first camera
@@ -607,8 +597,8 @@ class SevaRenderer(object):
                 "intrinsics": {
                     "fx": float(fx),
                     "fy": float(fy),
-                    "cx": float(K[0, 2] * wh[0]),
-                    "cy": float(K[1, 2] * wh[1]),
+                    "cx": float(K[0, 2]),
+                    "cy": float(K[1, 2]),
                     "width": int(wh[0]),
                     "height": int(wh[1])
                 }
@@ -617,48 +607,6 @@ class SevaRenderer(object):
             
         with open(osp.join(output_dir, "transforms.json"), "w") as f:
             json.dump(nerf_format, f, indent=4)
-            
-    def _save_point_cloud(self, output_dir, points, point_colors, scene_scale=1.0):
-        """Save point cloud data in PLY format for visualization."""
-        if not points or len(points) == 0:
-            return
-            
-        # Concatenate all point clouds
-        all_points = []
-        all_colors = []
-        for pts, colors in zip(points, point_colors):
-            if len(pts) > 0:
-                all_points.append(pts)
-                all_colors.append(colors)
-                
-        if not all_points:
-            return
-            
-        # Combine points and colors
-        combined_points = np.concatenate(all_points, axis=0)
-        combined_colors = np.concatenate(all_colors, axis=0)
-        
-        # Convert colors from float [0,1] to uint8 [0,255] if needed
-        if combined_colors.dtype != np.uint8 and combined_colors.max() <= 1.0:
-            combined_colors = (combined_colors * 255).astype(np.uint8)
-            
-        # Write PLY file - simple ASCII format
-        with open(osp.join(output_dir, "pointcloud.ply"), "w") as f:
-            f.write("ply\n")
-            f.write("format ascii 1.0\n")
-            f.write(f"element vertex {len(combined_points)}\n")
-            f.write("property float x\n")
-            f.write("property float y\n")
-            f.write("property float z\n")
-            f.write("property uchar red\n")
-            f.write("property uchar green\n")
-            f.write("property uchar blue\n")
-            f.write("end_header\n")
-            
-            for i in range(len(combined_points)):
-                x, y, z = combined_points[i]
-                r, g, b = combined_colors[i]
-                f.write(f"{x} {y} {z} {r} {g} {b}\n")
 
     def render(
         self,
@@ -747,15 +695,6 @@ class SevaRenderer(object):
         
         # Save in NeRF-friendly format
         self._save_nerf_transforms(export_dir, img_paths, img_whs, all_c2ws_gl, all_Ks_np)
-        
-        # Save point cloud if available
-        if "points" in preprocessed and "point_colors" in preprocessed:
-            self._save_point_cloud(
-                export_dir, 
-                preprocessed["points"], 
-                preprocessed["point_colors"],
-                preprocessed.get("scene_scale", 1.0)
-            )
         
         # Save split information
         split_dict = {
@@ -1135,8 +1074,8 @@ class SevaRenderer(object):
                 "intrinsics": {
                     "fx": float(fx),
                     "fy": float(fy),
-                    "cx": float(K[0, 2] * wh[0]),
-                    "cy": float(K[1, 2] * wh[1]),
+                    "cx": float(K[0, 2]),
+                    "cy": float(K[1, 2]),
                     "width": int(wh[0]),
                     "height": int(wh[1])
                 }
@@ -1146,49 +1085,6 @@ class SevaRenderer(object):
         with open(osp.join(output_dir, "transforms.json"), "w") as f:
             json.dump(nerf_format, f, indent=4)
             
-    def _save_point_cloud(self, output_dir, points, point_colors, scene_scale=1.0):
-        """Save point cloud data in PLY format for visualization."""
-        if not points or len(points) == 0:
-            return
-            
-        # Concatenate all point clouds
-        all_points = []
-        all_colors = []
-        for pts, colors in zip(points, point_colors):
-            if len(pts) > 0:
-                all_points.append(pts)
-                all_colors.append(colors)
-                
-        if not all_points:
-            return
-            
-        # Combine points and colors
-        combined_points = np.concatenate(all_points, axis=0)
-        combined_colors = np.concatenate(all_colors, axis=0)
-        
-        # Convert colors from float [0,1] to uint8 [0,255] if needed
-        if combined_colors.dtype != np.uint8 and combined_colors.max() <= 1.0:
-            combined_colors = (combined_colors * 255).astype(np.uint8)
-            
-        # Write PLY file - simple ASCII format
-        with open(osp.join(output_dir, "pointcloud.ply"), "w") as f:
-            f.write("ply\n")
-            f.write("format ascii 1.0\n")
-            f.write(f"element vertex {len(combined_points)}\n")
-            f.write("property float x\n")
-            f.write("property float y\n")
-            f.write("property float z\n")
-            f.write("property uchar red\n")
-            f.write("property uchar green\n")
-            f.write("property uchar blue\n")
-            f.write("end_header\n")
-            
-            for i in range(len(combined_points)):
-                x, y, z = combined_points[i]
-                r, g, b = combined_colors[i]
-                f.write(f"{x} {y} {z} {r} {g} {b}\n")
-
-
 # This is basically a copy of the original `networking.setup_tunnel` function,
 # but it also returns the tunnel object for proper cleanup.
 def setup_tunnel(
