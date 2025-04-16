@@ -469,109 +469,31 @@ class SevaRenderer(object):
 
         os.makedirs(output_dir, exist_ok=True)
         img_paths = []
-        
-        # Save input images
         for i, img in enumerate(input_imgs):
             iio.imwrite(img_path := osp.join(output_dir, f"{i:03d}.png"), img)
             img_paths.append(img_path)
-        
-        # Look for rendered images in recent directories
-        latest_render_dir = self._find_latest_render_dir()
-        if latest_render_dir and osp.exists(latest_render_dir):
-            # Try to find the final rendered video
-            mp4_files = sorted(glob(osp.join(latest_render_dir, "*.mp4")))
-            if mp4_files:
-                latest_video = mp4_files[-1]
-                # Extract frames from the video
-                self._extract_frames_from_video(latest_video, output_dir, start_idx=num_inputs)
-                # Update target count based on extracted frames
-                extracted_frames = sorted(glob(osp.join(output_dir, f"[{num_inputs:03d}-9]*.png")))
-                num_targets = len(extracted_frames)
-            else:
-                # If no video found, look for individual frames
-                rendered_frames = sorted(glob(osp.join(latest_render_dir, "*.png")))
-                for i, frame_path in enumerate(rendered_frames):
-                    target_path = osp.join(output_dir, f"{i + num_inputs:03d}.png")
-                    img = iio.imread(frame_path)
-                    iio.imwrite(target_path, img)
-                    img_paths.append(target_path)
-                num_targets = len(rendered_frames)
-        else:
-            # If no rendered output is found, create placeholder black images for targets
-            for i in range(num_targets):
-                iio.imwrite(
-                    img_path := osp.join(output_dir, f"{i + num_inputs:03d}.png"),
-                    np.zeros((input_wh[1], input_wh[0], 3), dtype=np.uint8),
-                )
-                img_paths.append(img_path)
+        for i in range(num_targets):
+            iio.imwrite(
+                img_path := osp.join(output_dir, f"{i + num_inputs:03d}.png"),
+                np.zeros((input_wh[1], input_wh[0], 3), dtype=np.uint8),
+            )
+            img_paths.append(img_path)
 
-        # Convert from OpenCV to OpenGL camera format
+        # Convert from OpenCV to OpenGL camera format.
         all_c2ws = np.concatenate([input_c2ws, target_c2ws])
         all_Ks = np.concatenate([input_Ks, target_Ks])
         all_c2ws = all_c2ws @ np.diag([1, -1, -1, 1])
-        
-        # Save camera transforms for NeRF/Gaussian Splatting
         create_transforms_simple(output_dir, img_paths, img_whs, all_c2ws, all_Ks)
-        
-        # Save additional NeRF-friendly formats
-        self._save_nerf_transforms(output_dir, img_paths, img_whs, all_c2ws, all_Ks)
-        # Save split information
         split_dict = {
             "train_ids": list(range(num_inputs)),
             "test_ids": list(range(num_inputs, num_inputs + num_targets)),
         }
-        with open(osp.join(output_dir, f"train_test_split_{num_inputs}.json"), "w") as f:
+        with open(
+            osp.join(output_dir, f"train_test_split_{num_inputs}.json"), "w"
+        ) as f:
             json.dump(split_dict, f, indent=4)
-            
-        # Save metadata
-        metadata = {
-            "num_inputs": num_inputs,
-            "num_targets": num_targets,
-            "image_width": input_wh[0],
-            "image_height": input_wh[1],
-            "export_timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "scene_scale": float(preprocessed.get("scene_scale", 1.0)),
-        }
-        with open(osp.join(output_dir, "metadata.json"), "w") as f:
-            json.dump(metadata, f, indent=4)
-            
-        gr.Info(f"Output data saved to {output_dir}", duration=3)
+        gr.Info(f"Output data saved to {output_dir}", duration=1)
         return self.create_download_zip(output_dir)
-        
-    def _find_latest_render_dir(self):
-        """Find the most recent render directory in WORK_DIR."""
-        render_dirs = sorted(glob(osp.join(WORK_DIR, "2*")))
-        return render_dirs[-1] if render_dirs else None
-        
-    def _extract_frames_from_video(self, video_path, output_dir, start_idx=0):
-        """Extract frames from video file and save as images."""
-        try:
-            # Use imageio to read video frames
-            reader = iio.imopen(video_path, "r")
-            # Extract metadata to get number of frames
-            metadata = reader.metadata()
-            n_frames = metadata.get("fps", 30) * metadata.get("duration", 0)
-            
-            # Read and save frames
-            frames = iio.imread(video_path)
-            if len(frames.shape) == 4:  # Check if frames is a sequence of images
-                for i, frame in enumerate(frames):
-                    iio.imwrite(
-                        osp.join(output_dir, f"{start_idx + i:03d}.png"), 
-                        frame
-                    )
-                return len(frames)
-            else:
-                # Single frame case
-                iio.imwrite(
-                    osp.join(output_dir, f"{start_idx:03d}.png"), 
-                    frames
-                )
-                return 1
-                
-        except Exception as e:
-            gr.Warning(f"Error extracting frames: {e}")
-            return 0
             
     def _save_nerf_transforms(self, output_dir, img_paths, img_whs, all_c2ws, all_Ks):
         """Save camera transforms in a format friendly for NeRF training."""
@@ -675,8 +597,7 @@ class SevaRenderer(object):
             img_path = osp.join(export_dir, f"{i:03d}.png")
             iio.imwrite(img_path, img)
             img_paths.append(img_path)
-            
-        # Create placeholder images for target views
+        
         for i in range(num_targets):
             img_path = osp.join(export_dir, f"{i + num_inputs:03d}.png")
             iio.imwrite(img_path, np.zeros((H, W, 3), dtype=np.uint8))
