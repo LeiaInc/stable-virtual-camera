@@ -1050,40 +1050,6 @@ class SevaRenderer(object):
         except Exception as e:
             gr.Warning(f"Error updating export with rendered frames: {str(e)}")
             
-    def _save_nerf_transforms(self, output_dir, img_paths, img_whs, all_c2ws, all_Ks):
-        """Save camera transforms in a format friendly for NeRF training."""
-        # Create transforms.json in the style used by many NeRF implementations
-        nerf_format = {
-            "camera_angle_x": 0.0,  # Will be set properly below
-            "frames": []
-        }
-        
-        for i, (c2w, K, wh, img_path) in enumerate(zip(all_c2ws, all_Ks, img_whs, img_paths)):
-            # Extract focal length and calculate FOV
-            fx, fy = K[0, 0] * wh[0], K[1, 1] * wh[1]
-            fov_x = 2 * np.arctan(wh[0] / (2 * fx))
-            
-            # Set the global camera_angle_x from the first camera
-            if i == 0:
-                nerf_format["camera_angle_x"] = float(fov_x)
-                
-            # Convert c2w to the format expected by NeRF (already converted to OpenGL earlier)
-            frame_data = {
-                "file_path": osp.relpath(img_path, output_dir),
-                "transform_matrix": c2w.tolist(),
-                "intrinsics": {
-                    "fx": float(fx),
-                    "fy": float(fy),
-                    "cx": float(K[0, 2]),
-                    "cy": float(K[1, 2]),
-                    "width": int(wh[0]),
-                    "height": int(wh[1])
-                }
-            }
-            nerf_format["frames"].append(frame_data)
-            
-        with open(osp.join(output_dir, "transforms.json"), "w") as f:
-            json.dump(nerf_format, f, indent=4)
             
 # This is basically a copy of the original `networking.setup_tunnel` function,
 # but it also returns the tunnel object for proper cleanup.
