@@ -7,6 +7,7 @@ import secrets
 import threading
 import time
 import zipfile
+import shutil
 from datetime import datetime
 from glob import glob
 from pathlib import Path
@@ -882,73 +883,37 @@ class SevaRenderer(object):
             if not osp.exists(render_dir):
                 gr.Warning(f"Render directory not found: {render_dir}")
                 return
-                
+            
+            # Set the specific samples directory based on whether it's first or second pass
+            samples_dir = osp.join(render_dir, "samples-rgb")
+            
             # Log for debugging
-            gr.Info(f"Updating export from {render_dir}")
+            gr.Info(f"Updating export from {samples_dir}")
             
-            # Look for videos first (mp4 files)
-            mp4_files = sorted(glob(osp.join(render_dir, "*.mp4")))
+            # Check if the samples directory exists
+            if not osp.exists(samples_dir):
+                gr.Warning(f"Samples directory not found: {samples_dir}")
+                return
             
-            # If no mp4 files found directly, look for mp4 files in subdirectories
-            if not mp4_files:
-                for subdir in glob(osp.join(render_dir, "*/")):
-                    mp4_files.extend(sorted(glob(osp.join(subdir, "*.mp4"))))
-                    
-            # If still no mp4 files, check the parent directory (one level up)
-            if not mp4_files and '/' in render_dir:
-                parent_dir = osp.dirname(render_dir)
-                mp4_files.extend(sorted(glob(osp.join(parent_dir, "*.mp4"))))
-            
-            if mp4_files:
-                gr.Info(f"Found {len(mp4_files)} video file(s) to extract frames from")
-                # Extract frames from the most recent video
-                video_path = mp4_files[-1]
-                
-                try:
-                    # Read the video frames
-                    frames = iio.imread(video_path)
-                    
-                    if len(frames.shape) == 4:  # Check if frames is a sequence of images
-                        for i, frame in enumerate(frames):
-                            out_path = osp.join(export_dir, f"{start_idx + i:03d}.png")
-                            iio.imwrite(out_path, frame)
-                        gr.Info(f"Extracted {len(frames)} frames from video")
-                    else:
-                        # Single frame case
-                        out_path = osp.join(export_dir, f"{start_idx:03d}.png")
-                        iio.imwrite(out_path, frames)
-                        gr.Info("Extracted 1 frame from video")
-                except Exception as e:
-                    gr.Warning(f"Error reading video file: {str(e)}")
-            
-            # Look for individual frames (png/jpg files)
+            # Get image files from the samples directory
             image_files = []
             for ext in ["*.png", "*.jpg", "*.jpeg"]:
-                # Look in main directory
-                image_files.extend(sorted(glob(osp.join(render_dir, ext))))
-                # Look in subdirectories
-                for subdir in glob(osp.join(render_dir, "*/")):
-                    image_files.extend(sorted(glob(osp.join(subdir, ext))))
-                    
-            # If no image files, check parent directory
-            if not image_files and '/' in render_dir:
-                parent_dir = osp.dirname(render_dir)
-                for ext in ["*.png", "*.jpg", "*.jpeg"]:
-                    image_files.extend(sorted(glob(osp.join(parent_dir, ext))))
+                image_files.extend(sorted(glob(osp.join(samples_dir, ext))))
             
             if image_files:
-                gr.Info(f"Found {len(image_files)} individual image file(s)")
+                gr.Info(f"Found {len(image_files)} image files")
+                
+                # Copy the images to the export directory
                 for i, frame_path in enumerate(image_files):
                     try:
-                        img = iio.imread(frame_path)
                         out_path = osp.join(export_dir, f"{start_idx + i:03d}.png")
-                        iio.imwrite(out_path, img)
+                        shutil.copy2(frame_path, out_path)
                     except Exception as e:
-                        gr.Warning(f"Error processing image {frame_path}: {str(e)}")
+                        gr.Warning(f"Error copying image {frame_path}: {str(e)}")
                         
-            # If no frames found at all, warn user
-            if not mp4_files and not image_files:
-                gr.Warning(f"No frames or videos found in {render_dir}")
+                gr.Info(f"Successfully copied {len(image_files)} images to export directory")
+            else:
+                gr.Warning(f"No image files found in {samples_dir}")
                     
             # Update metadata to mark that frames have been updated
             metadata_path = osp.join(export_dir, "metadata.json")
@@ -958,12 +923,8 @@ class SevaRenderer(object):
                     
                 metadata["frames_updated"] = True
                 metadata["update_timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                if mp4_files:
-                    metadata["frame_source"] = "video"
-                    metadata["video_path"] = mp4_files[-1]
-                elif image_files:
-                    metadata["frame_source"] = "images"
-                    metadata["num_images"] = len(image_files)
+                metadata["frame_source"] = "images"
+                metadata["num_images"] = len(image_files)
                 
                 with open(metadata_path, "w") as f:
                     json.dump(metadata, f, indent=4)
