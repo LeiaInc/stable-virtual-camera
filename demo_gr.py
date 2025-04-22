@@ -499,32 +499,30 @@ class SevaRenderer(object):
     def _save_nerf_transforms(self, output_dir, img_paths, img_whs, all_c2ws, all_Ks):
         """Save camera transforms in a format friendly for NeRF training."""
         # Create transforms.json in the style used by many NeRF implementations
+        # Extract focal length and other parameters from first camera
+        fx, fy = all_Ks[0][0][0], all_Ks[0][1][1]
+        cx, cy = all_Ks[0][0][2], all_Ks[0][1][2]
+        wh = img_whs[0]
+        w, h = int(wh[0]), int(wh[1])
+        fov_x = 2 * np.arctan(w / (2 * fx))
+        
+        # Create the nerf format with global camera parameters
         nerf_format = {
-            "camera_angle_x": 0.0,  # Will be set properly below
+            "camera_angle_x": float(fov_x),
+            "fl_x": float(fx),
+            "fl_y": float(fy),
+            "cx": float(cx),
+            "cy": float(cy),
+            "w": w,
+            "h": h,
             "frames": []
         }
         
-        for i, (c2w, K, wh, img_path) in enumerate(zip(all_c2ws, all_Ks, img_whs, img_paths)):
-            # Extract focal length and calculate FOV
-            fx, fy = K[0, 0], K[1, 1]
-            fov_x = 2 * np.arctan(wh[0] / (2 * fx))
-            
-            # Set the global camera_angle_x from the first camera
-            if i == 0:
-                nerf_format["camera_angle_x"] = float(fov_x)
-                
-            # Convert c2w to the format expected by NeRF (already converted to OpenGL earlier)
+        for i, (c2w, img_path) in enumerate(zip(all_c2ws, img_paths)):
+            # Format each frame with just the transform matrix and file path
             frame_data = {
                 "file_path": osp.relpath(img_path, output_dir),
-                "transform_matrix": c2w.tolist(),
-                "intrinsics": {
-                    "fx": float(fx),
-                    "fy": float(fy),
-                    "cx": float(K[0, 2]),
-                    "cy": float(K[1, 2]),
-                    "width": int(wh[0]),
-                    "height": int(wh[1])
-                }
+                "transform_matrix": c2w.tolist()
             }
             nerf_format["frames"].append(frame_data)
             
