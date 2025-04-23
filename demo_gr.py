@@ -467,7 +467,7 @@ class SevaRenderer(object):
             
             # Format for Gaussian Splatting - minimal frame info
             frame_data = {
-                "file_path": str(i),  # Just the index without .png extension
+                "file_path": f"{i:03d}",  # Just the index without .png extension
                 "transform_matrix": c2w_blender.tolist()
             }
             transforms_format["frames"].append(frame_data)
