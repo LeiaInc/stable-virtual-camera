@@ -463,7 +463,7 @@ class SevaRenderer(object):
         # Add frames data 
         for i in range(len(all_c2ws)):
             # Apply the conversion to Blender coordinate system
-            c2w_blender = all_c2ws[i] @ blender_conversion
+            c2w_blender = all_c2ws[i] # @ blender_conversion
             
             # Format for Gaussian Splatting - minimal frame info
             frame_data = {
