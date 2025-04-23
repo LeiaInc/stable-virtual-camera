@@ -55,3 +55,4 @@ htmlcov/
 *.zip.part.3
 *.zip.part.4
 outputs
+splats

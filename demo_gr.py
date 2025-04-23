@@ -428,13 +428,69 @@ class SevaRenderer(object):
         )
         return target_c2ws, target_Ks
 
+    def _save_gaussian_splatting_transforms(self, output_dir, img_paths, img_whs, all_c2ws, all_Ks, num_inputs, num_targets):
+        """Save camera transforms in formats used by Gaussian Splatting."""
+        # Convert from OpenGL to Blender format
+        # Blender: +Z up, +Y forward, +X right (right-handed)
+        # OpenGL: +Y up, -Z forward, +X right (right-handed)
+        # Rotation to convert: X stays, Y->Z, Z->-Y
+        blender_conversion = np.array([
+            [1, 0, 0, 0],
+            [0, 0, 1, 0],
+            [0, -1, 0, 0],
+            [0, 0, 0, 1]
+        ])
+        
+        # Extract camera parameters from first camera
+        fx, fy = all_Ks[0][0][0], all_Ks[0][1][1]
+        cx, cy = all_Ks[0][0][2], all_Ks[0][1][2]
+        wh = img_whs[0]
+        w, h = int(wh[0]), int(wh[1])
+        fov_x = 2 * np.arctan(w / (2 * fx))
+        
+        # Create the NeRF-like format with global camera parameters
+        transforms_format = {
+            "camera_angle_x": float(fov_x),
+            "fl_x": float(fx),
+            "fl_y": float(fy),
+            "cx": float(cx),
+            "cy": float(cy),
+            "w": w,
+            "h": h,
+            "frames": []
+        }
+        
+        # Add frames data 
+        for i in range(len(all_c2ws)):
+            # Apply the conversion to Blender coordinate system
+            c2w_blender = all_c2ws[i] @ blender_conversion
+            
+            # Format for Gaussian Splatting - minimal frame info
+            frame_data = {
+                "file_path": str(i),  # Just the index without .png extension
+                "transform_matrix": c2w_blender.tolist()
+            }
+            transforms_format["frames"].append(frame_data)
+        
+        # Write the same data to both train and test
+        with open(osp.join(output_dir, "transforms_train.json"), "w") as f:
+            json.dump(transforms_format, f, indent=4)
+            
+        # Write identical copy as test transforms
+        with open(osp.join(output_dir, "transforms_test.json"), "w") as f:
+            json.dump(transforms_format, f, indent=4)
+        
+        # Also write a copy as validation for compatibility
+        with open(osp.join(output_dir, "transforms_val.json"), "w") as f:
+            json.dump(transforms_format, f, indent=4)
+
     def export_output_data(self, preprocessed: dict, output_dir: str = None) -> str:
         """Export the current data for NeRF/Gaussian Splatting processing."""
         # If we're in the middle of rendering or just finished rendering,
         # use the already created export directory
         if hasattr(self, '_current_export_dir') and self._current_export_dir:
             # Just return the existing ZIP
-            gr.Info(f"Using export data from the current render", duration=3)
+            gr.Info("Using export data from the current render", duration=3)
             return self.create_download_zip(self._current_export_dir)
         
         # Create a timestamp-based output directory if none is provided
@@ -495,7 +551,7 @@ class SevaRenderer(object):
             json.dump(split_dict, f, indent=4)
         gr.Info(f"Output data saved to {output_dir}", duration=1)
         return self.create_download_zip(output_dir)
-            
+    
     def _save_nerf_transforms(self, output_dir, img_paths, img_whs, all_c2ws, all_Ks):
         """Save camera transforms in a format friendly for NeRF training."""
         # Create transforms.json in the style used by many NeRF implementations
@@ -528,6 +584,7 @@ class SevaRenderer(object):
             
         with open(osp.join(output_dir, "transforms.json"), "w") as f:
             json.dump(nerf_format, f, indent=4)
+
 
     def render(
         self,
@@ -615,6 +672,9 @@ class SevaRenderer(object):
         
         # Save in NeRF-friendly format
         self._save_nerf_transforms(export_dir, img_paths, img_whs, all_c2ws_gl, all_Ks_np)
+        
+        # Save in Gaussian Splatting format
+        self._save_gaussian_splatting_transforms(export_dir, img_paths, img_whs, all_c2ws_gl, all_Ks_np, num_inputs, num_targets)
         
         # Save split information
         split_dict = {
@@ -923,7 +983,6 @@ class SevaRenderer(object):
                 metadata["update_timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 metadata["frame_source"] = "images"
                 metadata["num_images"] = len(image_files)
-                
                 with open(metadata_path, "w") as f:
                     json.dump(metadata, f, indent=4)
                     
