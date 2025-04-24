@@ -434,12 +434,12 @@ class SevaRenderer(object):
         # Blender: +Z up, +Y forward, +X right (right-handed)
         # OpenGL: +Y up, -Z forward, +X right (right-handed)
         # Rotation to convert: X stays, Y->Z, Z->-Y
-        blender_conversion = np.array([
-            [1, 0, 0, 0],
-            [0, 0, 1, 0],
-            [0, -1, 0, 0],
-            [0, 0, 0, 1]
-        ])
+        # blender_conversion = np.array([
+        #     [1, 0, 0, 0],
+        #     [0, 0, 1, 0],
+        #     [0, -1, 0, 0],
+        #     [0, 0, 0, 1]
+        # ])
         
         # Extract camera parameters from first camera
         fx, fy = all_Ks[0][0][0], all_Ks[0][1][1]
