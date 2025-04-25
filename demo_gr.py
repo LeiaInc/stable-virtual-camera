@@ -865,72 +865,69 @@ class SevaRenderer(object):
             LocalContext.event_id.set(event_id)
             
             try:
-                for i, video_path in enumerate(video_path_generator):
-                    if i == 0:
-                        # First pass completed - update UI and export with first pass frames
-                        self._update_export_with_rendered_frames(
-                            osp.join(render_dir, "first-pass"), 
-                            export_dir, 
-                            num_inputs
-                        )
-                        first_pass_zip_path = self.create_download_zip(export_dir)
-                        
-                        output_queue.put({
-                            "video": video_path,
-                            "render_btn": gr.update(visible=False),
-                            "abort_btn": gr.update(visible=True),
-                            "progress": gr.update(visible=True),
-                            "download": gr.update(value=first_pass_zip_path, interactive=True),
-                            "training_output": gr.update(visible=False)
-                        })
-                    elif i == 1:
-                        # Second pass completed - update export with final frames
-                        self._update_export_with_rendered_frames(render_dir, export_dir, num_inputs)
-                        final_zip_path = self.create_download_zip(export_dir)
-                        
-                        # # Start splat training
-                        # gr.Info(f"Starting splat training on {export_dir}")
-                        # train_cmd = f"ns-train splatfacto --data {export_dir}"
-                        # process = subprocess.Popen(
-                        #     train_cmd,
-                        #     shell=True,
-                        #     stdout=subprocess.PIPE,
-                        #     stderr=subprocess.STDOUT,
-                        #     text=True,
-                        #     bufsize=1
-                        # )
-                        
-                        # viewer_url = None
-                        # output_lines = []
-                        # for _ in range(5000):
-                        #     line = process.stdout.readline()
-                        #     if not line:
-                        #         break
-                        #     output_lines.append(line.strip())
-                        #     if "Viewer at" in line:
-                        #         viewer_url = line.strip().split("Viewer at")[-1].strip()
-                        
-                        # # Format the output to include the viewer URL prominently
-                        # if viewer_url:
-                        #     training_logs = f"NERFSTUDIO VIEWER: {viewer_url}\n\n" + "\n".join(output_lines)
-                        # else:
-                        #     training_logs = "Training started, viewer URL will appear soon...\n\n" + "\n".join(output_lines)
-                        
-                        training_logs = ""
-                        # Update UI with final video and training info
-                        output_queue.put({
-                            "video": video_path,
-                            "render_btn": gr.update(visible=False),
-                            "abort_btn": gr.update(visible=True),
-                            "progress": gr.update(
-                                visible=True, 
-                                value=f"Splat training started! Check the Nerfstudio Training box below for the viewer URL."
-                            ),
-                            "download": gr.update(value=final_zip_path, interactive=True),
-                            "training_output": gr.update(visible=True, value=training_logs)
-                        })
-                    else:
-                        gr.Error("More than two passes during rendering.")
+                # Use a try-except block specifically for the generator iteration
+                # This will catch StopIteration if the generator is aborted
+                try:
+                    for i, video_path in enumerate(video_path_generator):
+                        # Check if abort was requested between iterations
+                        if abort_event.is_set():
+                            print("Aborting worker during video generation iteration")
+                            break
+                            
+                        if i == 0:
+                            # First pass completed - update UI and export with first pass frames
+                            self._update_export_with_rendered_frames(
+                                osp.join(render_dir, "first-pass"), 
+                                export_dir, 
+                                num_inputs
+                            )
+                            first_pass_zip_path = self.create_download_zip(export_dir)
+                            
+                            training_logs = ""
+                            # Update UI with final video and training info
+                            output_queue.put({
+                                "video": video_path,
+                                "render_btn": gr.update(visible=False),
+                                "abort_btn": gr.update(visible=True),
+                                "progress": gr.update(
+                                    visible=True, 
+                                    value=f"First pass completed. Processing second pass..."
+                                ),
+                                "download": gr.update(value=first_pass_zip_path, interactive=True),
+                                "training_output": gr.update(visible=False)
+                            })
+                        elif i == 1:
+                            # Second pass completed - update export with final frames
+                            self._update_export_with_rendered_frames(render_dir, export_dir, num_inputs)
+                            final_zip_path = self.create_download_zip(export_dir)
+                            
+                            training_logs = ""
+                            # Update UI with final video and training info
+                            output_queue.put({
+                                "video": video_path,
+                                "render_btn": gr.update(visible=True),  # Show render button since completed
+                                "abort_btn": gr.update(visible=False), # Hide abort since completed
+                                "progress": gr.update(
+                                    visible=True, 
+                                    value=f"Rendering completed successfully! You can now download the results."
+                                ),
+                                "download": gr.update(value=final_zip_path, interactive=True),
+                                "training_output": gr.update(visible=False)
+                            })
+                        else:
+                            gr.Error("More than two passes during rendering.")
+                except StopIteration:
+                    print("Video generation was stopped by abort_event")
+                    # If aborted during first or second pass, notify the user
+                    output_queue.put({
+                        "video": None,
+                        "render_btn": gr.update(visible=True),
+                        "abort_btn": gr.update(visible=False),
+                        "progress": gr.update(visible=False, value="Rendering was aborted"),
+                        "download": gr.update(value=zip_path, interactive=True),
+                        "training_output": gr.update(visible=False)
+                    })
+                    return
             except Exception as e:
                 gr.Error(f"Error during rendering: {str(e)}")
                 output_queue.put({
@@ -946,32 +943,76 @@ class SevaRenderer(object):
         thread = threading.Thread(target=worker, daemon=True)
         thread.start()
         
-        # Wait for results or abort
-        while thread.is_alive() or not output_queue.empty():
-            if abort_event.is_set():
-                thread.join(timeout=1.0)
-                abort_event.clear()
+        # Wait for results or abort with a timeout
+        max_wait_time = 300  # 5 minutes max wait time
+        wait_start_time = time.time()
+        
+        while (thread.is_alive() or not output_queue.empty()) and (time.time() - wait_start_time < max_wait_time):
+            try:
+                # Check if abort was requested
+                if abort_event.is_set():
+                    print(f"Main render loop detected abort event for {session_hash}")
+                    # Give the thread a chance to finish gracefully
+                    thread.join(timeout=5.0)
+                    if thread.is_alive():
+                        print(f"Worker thread didn't exit after 5 seconds, continuing anyway")
+                    # Clear abort flag
+                    abort_event.clear()
+                    # Update UI
+                    yield (
+                        None,  # Clear video
+                        gr.update(visible=True),  # Show render button
+                        gr.update(visible=False),  # Hide abort button
+                        gr.update(visible=False, value="Rendering was aborted"),  # Hide progress
+                        gr.update(value=zip_path, interactive=True),  # Keep download button
+                        None,  # No training output yet
+                    )
+                    return
+                
+                # Process any available results
+                if not output_queue.empty():
+                    result = output_queue.get()
+                    yield (
+                        result["video"],
+                        result["render_btn"],
+                        result["abort_btn"],
+                        result["progress"],
+                        result["download"],
+                        result["training_output"]
+                    )
+                
+                # Small sleep to prevent tight loop
+                time.sleep(0.1)
+            except Exception as e:
+                print(f"Error in main render loop: {str(e)}")
+                # Handle unexpected errors
                 yield (
                     None,  # Clear video
                     gr.update(visible=True),  # Show render button
                     gr.update(visible=False),  # Hide abort button
-                    gr.update(visible=False),  # Hide progress
+                    gr.update(visible=False, value=f"Error: {str(e)}"),  # Show error message
                     gr.update(value=zip_path, interactive=True),  # Keep download button
                     None,  # No training output yet
                 )
                 return
-                
-            time.sleep(0.1)
-            if not output_queue.empty():
-                result = output_queue.get()
-                yield (
-                    result["video"],
-                    result["render_btn"],
-                    result["abort_btn"],
-                    result["progress"],
-                    result["download"],
-                    result["training_output"]
-                )
+        
+        # Handle timeout
+        if thread.is_alive() and time.time() - wait_start_time >= max_wait_time:
+            print(f"Rendering timed out after {max_wait_time} seconds")
+            # Try to abort
+            abort_event.set()
+            thread.join(timeout=1.0)
+            abort_event.clear()
+            # Update UI
+            yield (
+                None,  # Clear video
+                gr.update(visible=True),  # Show render button
+                gr.update(visible=False),  # Hide abort button
+                gr.update(visible=False, value="Rendering timed out"),  # Show timeout message
+                gr.update(value=zip_path, interactive=True),  # Keep download button
+                None,  # No training output yet
+            )
+            return
 
     def _update_export_with_rendered_frames(self, render_dir, export_dir, start_idx):
         """Update the export directory with actual rendered frames after they're generated."""
@@ -1119,10 +1160,30 @@ def stop_server_and_abort_event(request: gr.Request):
         ABORT_EVENTS.pop(request.session_hash)
 
 
-def set_abort_event(request: gr.Request):
-    if request.session_hash in ABORT_EVENTS:
-        print(f"Setting abort event {request.session_hash}")
-        ABORT_EVENTS[request.session_hash].set()
+def set_abort_event(session_hash: str):
+    if session_hash in ABORT_EVENTS:
+        print(f"Setting abort event for session {session_hash}")
+        abort_event = ABORT_EVENTS[session_hash]
+        if abort_event.is_set():
+            print(f"Abort event was already set for {session_hash}")
+        else:
+            print(f"Setting abort event flag for {session_hash}")
+            abort_event.set()
+        
+        # Update UI with the abort status
+        return [
+            gr.update(visible=True),   # Show render button
+            gr.update(visible=False),  # Hide abort button
+            gr.update(visible=False),  # Hide progress
+        ]
+    else:
+        print(f"Warning: Attempted to set abort event for unknown session hash: {session_hash}")
+        
+    return [
+        gr.update(),  # No change to render button
+        gr.update(),  # No change to abort button
+        gr.update(),  # No change to progress
+    ]
 
 
 def get_advance_examples(selection: gr.SelectData):
@@ -1382,7 +1443,11 @@ def main(server_port: int | None = None, share: bool = True):
                             ],
                             outputs=[render_btn, abort_btn, render_progress, download_btn, training_output],
                         )
-                        abort_btn.click(set_abort_event)
+                        abort_btn.click(
+                            set_abort_event,
+                            inputs=[session_hash],
+                            outputs=[render_btn, abort_btn, render_progress]
+                        )
             with gr.Tab("Advanced"):
                 render_btn = gr.Button("Render video", interactive=False, render=False)
                 viewport = gr.HTML(container=True, render=False)
@@ -1569,7 +1634,11 @@ def main(server_port: int | None = None, share: bool = True):
                             ],
                             outputs=[render_btn, abort_btn, render_progress, download_btn, training_output],
                         )
-                        abort_btn.click(set_abort_event)
+                        abort_btn.click(
+                            set_abort_event,
+                            inputs=[session_hash],
+                            outputs=[render_btn, abort_btn, render_progress]
+                        )
 
         # Register the session initialization and cleanup functions.
         app.load(
