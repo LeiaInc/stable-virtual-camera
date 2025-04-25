@@ -12,6 +12,7 @@ from datetime import datetime
 from glob import glob
 from pathlib import Path
 from typing import Literal
+import subprocess
 
 import gradio as gr
 import httpx
@@ -855,6 +856,7 @@ class SevaRenderer(object):
             gr.update(visible=True),   # Show abort button
             gr.update(visible=True),   # Show progress
             gr.update(value=zip_path, interactive=True),  # Enable download with initial poses
+            None,  # No training output yet
         )
 
         # Define worker thread to process video generation
@@ -878,20 +880,54 @@ class SevaRenderer(object):
                             "render_btn": gr.update(visible=False),
                             "abort_btn": gr.update(visible=True),
                             "progress": gr.update(visible=True),
-                            "download": gr.update(value=first_pass_zip_path, interactive=True)
+                            "download": gr.update(value=first_pass_zip_path, interactive=True),
+                            "training_output": gr.update(visible=False)
                         })
                     elif i == 1:
                         # Second pass completed - update export with final frames
                         self._update_export_with_rendered_frames(render_dir, export_dir, num_inputs)
                         final_zip_path = self.create_download_zip(export_dir)
                         
-                        # Update UI with final video
+                        # # Start splat training
+                        # gr.Info(f"Starting splat training on {export_dir}")
+                        # train_cmd = f"ns-train splatfacto --data {export_dir}"
+                        # process = subprocess.Popen(
+                        #     train_cmd,
+                        #     shell=True,
+                        #     stdout=subprocess.PIPE,
+                        #     stderr=subprocess.STDOUT,
+                        #     text=True,
+                        #     bufsize=1
+                        # )
+                        
+                        # viewer_url = None
+                        # output_lines = []
+                        # for _ in range(5000):
+                        #     line = process.stdout.readline()
+                        #     if not line:
+                        #         break
+                        #     output_lines.append(line.strip())
+                        #     if "Viewer at" in line:
+                        #         viewer_url = line.strip().split("Viewer at")[-1].strip()
+                        
+                        # # Format the output to include the viewer URL prominently
+                        # if viewer_url:
+                        #     training_logs = f"NERFSTUDIO VIEWER: {viewer_url}\n\n" + "\n".join(output_lines)
+                        # else:
+                        #     training_logs = "Training started, viewer URL will appear soon...\n\n" + "\n".join(output_lines)
+                        
+                        training_logs = ""
+                        # Update UI with final video and training info
                         output_queue.put({
                             "video": video_path,
-                            "render_btn": gr.update(visible=True),
-                            "abort_btn": gr.update(visible=False),
-                            "progress": gr.update(visible=False),
-                            "download": gr.update(value=final_zip_path, interactive=True)
+                            "render_btn": gr.update(visible=False),
+                            "abort_btn": gr.update(visible=True),
+                            "progress": gr.update(
+                                visible=True, 
+                                value=f"Splat training started! Check the Nerfstudio Training box below for the viewer URL."
+                            ),
+                            "download": gr.update(value=final_zip_path, interactive=True),
+                            "training_output": gr.update(visible=True, value=training_logs)
                         })
                     else:
                         gr.Error("More than two passes during rendering.")
@@ -902,7 +938,8 @@ class SevaRenderer(object):
                     "render_btn": gr.update(visible=True),
                     "abort_btn": gr.update(visible=False),
                     "progress": gr.update(visible=False),
-                    "download": gr.update(value=zip_path, interactive=True)
+                    "download": gr.update(value=zip_path, interactive=True),
+                    "training_output": gr.update(visible=False)
                 })
 
         # Start worker thread
@@ -919,7 +956,8 @@ class SevaRenderer(object):
                     gr.update(visible=True),  # Show render button
                     gr.update(visible=False),  # Hide abort button
                     gr.update(visible=False),  # Hide progress
-                    gr.update(value=zip_path, interactive=True)  # Keep download button
+                    gr.update(value=zip_path, interactive=True),  # Keep download button
+                    None,  # No training output yet
                 )
                 return
                 
@@ -931,7 +969,8 @@ class SevaRenderer(object):
                     result["render_btn"],
                     result["abort_btn"],
                     result["progress"],
-                    result["download"]
+                    result["download"],
+                    result["training_output"]
                 )
 
     def _update_export_with_rendered_frames(self, render_dir, export_dir, start_idx):
@@ -1302,6 +1341,7 @@ def main(server_port: int | None = None, share: bool = True):
                         with gr.Group():
                             output_data_btn = gr.Button("Download Results as ZIP")
                             download_btn = gr.File(label="Download NeRF/Gaussian Splatting Data", interactive=False)
+                            training_output = gr.Textbox(label="Nerfstudio Training", interactive=False, visible=False)
                         output_data_btn.click(
                             lambda r, *args: r.export_output_data(*args),
                             inputs=[renderer, preprocessed],
@@ -1327,6 +1367,7 @@ def main(server_port: int | None = None, share: bool = True):
                                 abort_btn,
                                 render_progress,
                                 download_btn,
+                                training_output,
                             ],
                             show_progress_on=[render_progress],
                             concurrency_id="gpu_queue",
@@ -1337,8 +1378,9 @@ def main(server_port: int | None = None, share: bool = True):
                                 gr.update(visible=True),
                                 gr.update(visible=True),
                                 gr.update(interactive=True),
+                                gr.update(visible=False),
                             ],
-                            outputs=[render_btn, abort_btn, render_progress, download_btn],
+                            outputs=[render_btn, abort_btn, render_progress, download_btn, training_output],
                         )
                         abort_btn.click(set_abort_event)
             with gr.Tab("Advanced"):
@@ -1486,6 +1528,7 @@ def main(server_port: int | None = None, share: bool = True):
                         with gr.Group():
                             output_data_btn = gr.Button("Download Results as ZIP")
                             download_btn = gr.File(label="Download NeRF/Gaussian Splatting Data", interactive=False)
+                            training_output = gr.Textbox(label="Nerfstudio Training", interactive=False, visible=False)
                         output_data_btn.click(
                             lambda r, *args: r.export_output_data(*args),
                             inputs=[renderer, preprocessed],
@@ -1511,6 +1554,7 @@ def main(server_port: int | None = None, share: bool = True):
                                 abort_btn,
                                 render_progress,
                                 download_btn,
+                                training_output,
                             ],
                             show_progress_on=[render_progress],
                             concurrency_id="gpu_queue",
@@ -1521,8 +1565,9 @@ def main(server_port: int | None = None, share: bool = True):
                                 gr.update(visible=True),
                                 gr.update(visible=True),
                                 gr.update(interactive=True),
+                                gr.update(visible=False),
                             ],
-                            outputs=[render_btn, abort_btn, render_progress, download_btn],
+                            outputs=[render_btn, abort_btn, render_progress, download_btn, training_output],
                         )
                         abort_btn.click(set_abort_event)
 
