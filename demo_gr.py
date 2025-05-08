@@ -896,6 +896,8 @@ class SevaRenderer(object):
                                 "download": gr.update(value=first_pass_zip_path, interactive=True),
                                 "training_output": gr.update(visible=False)
                             })
+                            if num_frames == 20:
+                                return
                         elif i == 1:
                             # Second pass completed - update export with final frames
                             self._update_export_with_rendered_frames(render_dir, export_dir, num_inputs)
@@ -1312,7 +1314,7 @@ def main(server_port: int | None = None, share: bool = True):
                                 label="Preset trajectory",
                                 value="orbit",
                             )
-                            num_frames = gr.Slider(30, 150, 80, label="#Frames")
+                            num_frames = gr.Slider(20, 150, 80, label="#Frames")
                             zoom_factor = gr.Slider(
                                 step=0.01, label="Zoom factor", visible=False
                             )
